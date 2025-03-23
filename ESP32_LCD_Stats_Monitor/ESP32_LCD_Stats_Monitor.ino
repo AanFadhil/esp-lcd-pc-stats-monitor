@@ -22,6 +22,7 @@ int screenWidth;
 
 float lastDHTCaptured = 0;
 float lastMessageReceivedAt = 0;
+float lastRenderAt = 0;
 bool blinkFlop = false;
 
 
@@ -42,12 +43,20 @@ struct StatsDTO {
   int mm;
 };
 
+struct StatsTemp {
+  float t;
+  float h;
+  float hic;
+  bool read;
+};
+
 StatsDTO stats;
+StatsTemp tempStats;
+
 
 void setup() {
   Serial.begin(9600);
-  pinMode(DHT_PIN, INPUT_PULLUP);
-  //dht.begin();
+  dht.begin();
 
   tft.init();  // Initialize the display
   tft.setRotation(3);
@@ -66,6 +75,19 @@ void setup() {
 int32_t x = 25, y = 20, space = 10;
 uint8_t dispfont = 1, size = 3;
 
+void padStringSymmetrical(String *input, int length) {
+  int totalPadding = length - input->length();
+  int leftPadding = totalPadding / 2;
+  int rightPadding = totalPadding - leftPadding;
+
+  for (int i = 0; i < leftPadding; i++) {
+    *input = ' ' + *input;
+  }
+  for (int i = 0; i < rightPadding; i++) {
+    *input += ' ';
+  }
+}
+
 void captureDHT() {
   float deltaTime = millis() - lastDHTCaptured;
 
@@ -76,17 +98,18 @@ void captureDHT() {
 
     if (isnan(h) || isnan(t)) {
       Serial.println(F("Failed to read from DHT sensor!"));
+
+      tempStats.read = false;
+
       return;
     }
 
     float hic = dht.computeHeatIndex(t, h, false);
 
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
-
-    tft.setTextSize(3);
-    tft.drawCentreString(String(h, 1) + "c", 200, y, 2);
-    tft.setTextSize(1);
-    tft.drawCentreString(String(h, 0) + "% | " + String(hic, 0) + "c", 200, y + (3 * 8) + 10, 2);
+    tempStats.read = true;
+    tempStats.h = h;
+    tempStats.t = t;
+    tempStats.hic = hic;
   }
 }
 
@@ -102,10 +125,11 @@ void setSensorTextColor(int &value) {
   }
 }
 
-void drawStatsText(StatsDTO *data) {
+void drawStatsText(StatsDTO *data, StatsTemp *tempData) {
   int16_t fontheight = size * 8;
   int16_t spaceMultiplier = fontheight + space;
 
+  tft.setTextSize(size);
   setSensorTextColor(data->cpu);
   tft.drawString("CPU       : " + String(data->cpu) + String("% "), x, y, dispfont);
 
@@ -118,10 +142,26 @@ void drawStatsText(StatsDTO *data) {
   tft.setTextColor(TFT_GREEN, TFT_BLACK);
   tft.setTextSize(4);
 
-  char timeString[6]; // Buffer to hold the formatted time string "hh:mm"
-  sprintf(timeString, "%02d:%02d", data->hh, data->mm); // Format with leading zeros
+  char timeString[6];                                    // Buffer to hold the formatted time string "hh:mm"
+  sprintf(timeString, "%02d:%02d", data->hh, data->mm);  // Format with leading zeros
 
   tft.drawString(String(timeString), x, y + (spaceMultiplier * 3) + 20, dispfont);
+
+
+
+  String hicDisp = tempData->read ? (String(tempData->hic, 1) + "C") : "--";
+  padStringSymmetrical(&hicDisp, 6);
+  
+  String tDisp = tempData->read ? (String(tempData->t, 1) + "C") : "--"; //6 char
+  String hDisp = tempData->read ? (String(tempData->h, 1) + "%") : "--"; //6 char
+  String tempDetailDisp = hDisp + " | " + tDisp; // 6 + 6 + 3 
+  padStringSymmetrical(&tempDetailDisp, 6 + 6 + 3);
+
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.setTextSize(4);
+  tft.drawCentreString(hicDisp, 240, y + (spaceMultiplier * 3) + 20, dispfont);
+  tft.setTextSize(1);
+  tft.drawCentreString(tempDetailDisp, 240, y + (spaceMultiplier * 3) + 20 + (3*8) + 8, dispfont);
 }
 
 void readSerial() {
@@ -174,8 +214,6 @@ void readSerial() {
         stats.hh = doc["hh"];
         stats.mm = doc["mm"];
 
-        drawStatsText(&stats);
-
         lastMessageReceivedAt = millis();
       }
       reading = false;
@@ -184,6 +222,13 @@ void readSerial() {
 }
 
 void loop() {
-  //captureDHT();
+  captureDHT();
   readSerial();
+
+  float deltaTime = millis() - lastRenderAt;
+
+  if (deltaTime > 1000) {  
+    drawStatsText(&stats, &tempStats);
+    lastRenderAt = millis();
+  }
 }
