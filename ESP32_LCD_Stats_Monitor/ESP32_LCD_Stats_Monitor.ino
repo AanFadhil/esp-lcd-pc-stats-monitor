@@ -1,15 +1,13 @@
-#include <Base64.h>
-
-#include <AESLib.h>
-
+#include "config.h"
 #include <SPI.h>
 #include <TFT_eSPI.h>
 #include <Ethernet.h>
 #include <EthernetUdp.h>
+#include <WiFi.h>
+#include <WiFiUdp.h>
 
 #include <DHT.h>
 #include <ArduinoJson.h>
-
 
 #define DHTTYPE DHT11
 #define DHT_PIN 27
@@ -27,32 +25,7 @@
 #define FONT_SIZE 2
 #define MAX_UDP_PACKET_SIZE 50
 
-DHT dht(DHT_PIN, DHTTYPE);
-
-TFT_eSPI tft = TFT_eSPI();
-
-int centerX = SCREEN_WIDTH / 2;
-int centerY = SCREEN_HEIGHT / 2;
-
-int screenHeight;
-int screenWidth;
-
-float lastDHTCaptured = 0;
-float lastMessageReceivedAt = 0;
-float lastRenderAt = 0;
-bool blinkFlop = false;
-
-
-bool reading = false;
-String bufferPrint = String("");
-
-void captureDHT();
-void connectTCP();
-void padString(String &str);
-void ipPrinter(IPAddress *ipToPrint);
-
-StaticJsonDocument<200> doc;
-
+//# Region Types
 struct StatsDTO {
   int cpu;
   int cput;
@@ -67,61 +40,93 @@ struct StatsTemp {
   float hic;
   bool read;
 };
+//# EndRegion Types
 
+//# Region Method declarations
+void captureDHT();
+void connectTCP();
+void padString(String &str);
+void ipPrinter(IPAddress *ipToPrint);
+void padStringSymmetrical(String *input, int length);
+void setSensorTextColor(int &value);
+void drawStatsText(StatsDTO *data, StatsTemp *tempData);
+void ipPrinter(IPAddress *ipToPrint);
+void readUdp();
+void readSerial();
+void pingServer();
+void createMagicPacket(const char *macAddress, uint8_t *magicPacket);
+//# EndRegion Method declarations
+
+//# Region Constants
+const int centerX = SCREEN_WIDTH / 2;
+const int centerY = SCREEN_HEIGHT / 2;
+
+byte ethernet_mac[6] = ETHERNET_MAC;
+
+const unsigned int wifiUdp_localPort = WIFI_LOCAL_UDP_PORT;
+const char *wifiUdp_ssid = WIFI_SSID;
+const char *wifiUdp_password = WIFI_PASSWORD;
+const unsigned int localUDPPort = WIFI_LOCAL_UDP_PORT;  // local port to listen on
+const unsigned int echoUDPPort = ECHO_UDP_PORT;
+
+const char *udp_server_addr = UDP_SERVER_ADDR;
+const uint16_t udp_server_port = UDP_SERVER_PORT;
+
+const int32_t x = 25, y = 20, space = 10;
+const uint8_t dispfont = 1, size = 3;
+
+const char *macAddress = PC_MAC_ADDRESS;
+//# EndRegion Constants
+
+//# Region Global Lib Instances
+StaticJsonDocument<200> doc;
+
+DHT dht(DHT_PIN, DHTTYPE);
+
+TFT_eSPI tft = TFT_eSPI();
+
+EthernetClient client;
+IPAddress ip(ETHERNET_IP);
+IPAddress gateway(ETHERNET_GATEWAY_IP);
+IPAddress broadcast(ETHERNET_BC);
+
+EthernetUDP Udp;
+WiFiUDP wifi_udp;
+//# EndRegion Global Lib Instances
+
+
+//# Region Public variables
 StatsDTO stats;
 StatsTemp tempStats;
 
-// Define MAC address and optional static IP
-byte ethernet_mac[6] = { 0x6F, 0xFC, 0x31, 0x35, 0xA1, 47 };
-EthernetClient client;
-IPAddress ip(192, 168, 99, 99);
-IPAddress myDns(192, 168, 99, 1);
-IPAddress gateway(192, 168, 99, 1);
-IPAddress subnet(255, 255, 0, 0);
+int screenHeight;
+int screenWidth;
 
-unsigned int localUDPPort = 8888;  // local port to listen on
-EthernetUDP Udp;
-
-AESLib aesLib;
-
-byte aes_key[32];
-
-// General initialization vector (you must use your own IV's in production for full security!!!)
-byte aes_iv[16];
-
-String server_b64iv = "MTIzNDU2Nzg5MDEyMzQ1Ng==";  // same as aes_iv  but in Base-64 form as received from server
-String server_key = "MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=";
+float lastDHTCaptured = 0;
+float lastMessageReceivedAt = 0;
+float lastRenderAt = 0;
+float lastPingAt = 0;
+bool blinkFlop = false;
+bool reading = false;
+String bufferPrint = String("");
 
 char packetBuffer[MAX_UDP_PACKET_SIZE];  // buffer to hold incoming packet,
-char ReplyBuffer[] = "ack";                 // a string to send back
+char ReplyBuffer[] = "ack";              // a string to send back
 
-char cleartext[256] = { 0 };
-char ciphertext[512];
-
-String encrypt_impl(char *msg, byte iv[]) {
-  int msgLen = strlen(msg);
-  char encrypted[2 * msgLen] = { 0 };
-  aesLib.encrypt64((const byte *)msg, msgLen, encrypted, aes_key, sizeof(aes_key), iv);
-  return String(encrypted);
-}
-
-String decrypt_impl(char *msg, byte iv[]) {
-  int msgLen = strlen(msg);
-  char decrypted[msgLen] = { 0 };  // half may be enough
-  aesLib.decrypt64(msg, msgLen, (byte *)decrypted, aes_key, sizeof(aes_key), iv);
-  return String(decrypted);
-}
+uint8_t magicPacket[102];
+//# EndRegion Public variables
 
 void setup() {
   Serial.begin(9600);
-  while (!Serial) {
-    ;  // wait for serial port to connect. Needed for native USB port only
-  }
 
   SPI.begin(SPI_SCLK, SPI_MISO, SPI_MOSI);
   // Initialize SPI pins
   pinMode(TFT_CS, OUTPUT);
   pinMode(ETHERNET_CS, OUTPUT);
+
+  WiFi.begin(wifiUdp_ssid, wifiUdp_password);
+
+  wifi_udp.begin(wifiUdp_localPort);
 
   // Deactivate both devices initially
   digitalWrite(TFT_CS, HIGH);
@@ -135,9 +140,6 @@ void setup() {
 
   Ethernet.begin(ethernet_mac);
   Ethernet.setLocalIP(ip);
-  Ethernet.setGatewayIP(gateway);
-  Ethernet.setDnsServerIP(myDns);
-  Ethernet.setSubnetMask(subnet);
 
   if (Ethernet.hardwareStatus() == EthernetNoHardware) {
     Serial.println("Ethernet shield was not found.  Sorry, can't run without hardware. :(");
@@ -176,13 +178,9 @@ void setup() {
   Serial.print("w:");
   Serial.println(screenWidth);
 
-  aesLib.set_paddingmode(paddingMode::CMS);
-  base64_decode((char *)aes_iv, (char *)server_b64iv.c_str(), server_b64iv.length());
-  base64_decode((char *)aes_key, (char *)server_key.c_str(), server_key.length());
+  //convertKey(enc_key_str.c_str(), enc_key);
+  createMagicPacket(macAddress, magicPacket);
 }
-
-int32_t x = 25, y = 20, space = 10;
-uint8_t dispfont = 1, size = 3;
 
 void padStringSymmetrical(String *input, int length) {
   int totalPadding = length - input->length();
@@ -234,7 +232,13 @@ void setSensorTextColor(int &value) {
   }
 }
 
-void drawStatsText(StatsDTO *data, StatsTemp *tempData) {
+void drawStatsText() {
+
+  float deltaTime = millis() - lastRenderAt;
+
+  if (deltaTime < 1000) {
+    return;
+  }
 
   digitalWrite(TFT_CS, LOW);
   try {
@@ -242,28 +246,28 @@ void drawStatsText(StatsDTO *data, StatsTemp *tempData) {
     int16_t spaceMultiplier = fontheight + space;
 
     tft.setTextSize(size);
-    setSensorTextColor(data->cpu);
-    tft.drawString("CPU       : " + String(data->cpu) + String("% "), x, y, dispfont);
+    setSensorTextColor(stats.cpu);
+    tft.drawString("CPU       : " + String(stats.cpu) + String("% "), x, y, dispfont);
 
-    setSensorTextColor(data->cput);
-    tft.drawString("CPU Temp  : " + String(data->cput) + String("C "), x, y + (spaceMultiplier * 1) + 1, dispfont);
+    setSensorTextColor(stats.cput);
+    tft.drawString("CPU Temp  : " + String(stats.cput) + String("C "), x, y + (spaceMultiplier * 1) + 1, dispfont);
 
-    setSensorTextColor(data->mem);
-    tft.drawString("Memory    : " + String(data->mem) + String("% "), x, y + (spaceMultiplier * 2) + 1, dispfont);
+    setSensorTextColor(stats.mem);
+    tft.drawString("Memory    : " + String(stats.mem) + String("% "), x, y + (spaceMultiplier * 2) + 1, dispfont);
 
     tft.setTextColor(TFT_GREEN, TFT_BLACK);
     tft.setTextSize(4);
 
     char timeString[6];                                    // Buffer to hold the formatted time string "hh:mm"
-    sprintf(timeString, "%02d:%02d", data->hh, data->mm);  // Format with leading zeros
+    sprintf(timeString, "%02d:%02d", stats.hh, stats.mm);  // Format with leading zeros
 
     tft.drawString(String(timeString), x, y + (spaceMultiplier * 3) + 20, dispfont);
 
-    String hicDisp = tempData->read ? (String(tempData->hic, 1) + "C") : "--";
+    String hicDisp = tempStats.read ? (String(tempStats.hic, 1) + "C") : "--";
     padStringSymmetrical(&hicDisp, 6);
 
-    String tDisp = tempData->read ? (String(tempData->t, 1) + "C") : "--";  //6 char
-    String hDisp = tempData->read ? (String(tempData->h, 1) + "%") : "--";  //6 char
+    String tDisp = tempStats.read ? (String(tempStats.t, 1) + "C") : "--";  //6 char
+    String hDisp = tempStats.read ? (String(tempStats.h, 1) + "%") : "--";  //6 char
     String tempDetailDisp = hDisp + " | " + tDisp;                          // 6 + 6 + 3
     padStringSymmetrical(&tempDetailDisp, 6 + 6 + 3);
 
@@ -276,6 +280,8 @@ void drawStatsText(StatsDTO *data, StatsTemp *tempData) {
   }
 
   digitalWrite(TFT_CS, HIGH);
+
+  lastRenderAt = millis();
 }
 
 void ipPrinter(IPAddress *ipToPrint) {
@@ -287,29 +293,76 @@ void ipPrinter(IPAddress *ipToPrint) {
   }
 }
 
+void createMagicPacket(const char *macaddr, uint8_t *mgcPac) {
+  // Parse the MAC address string into bytes
+  uint8_t macBytes[6];
+  sscanf(macaddr, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
+         &macBytes[0], &macBytes[1], &macBytes[2],
+         &macBytes[3], &macBytes[4], &macBytes[5]);
+
+  // Fill the first 6 bytes of the packet with 0xFF
+  memset(mgcPac, 0xFF, 6);
+
+  // Repeat the MAC address 16 times
+  for (int i = 0; i < 16; i++) {
+    memcpy(mgcPac + 6 + i * 6, macBytes, 6);
+  }
+}
+
+void printMagicPacket(const uint8_t *mgPac, size_t length) {
+    // Print the magic packet in hexadecimal format
+    for (size_t i = 0; i < length; i++) {
+        if (i > 0 && i % 6 == 0) Serial.print(" "); // Add a space every 6 bytes for readability
+        Serial.printf("%02X", mgPac[i]);
+    }
+    Serial.println();
+}
+
 void readUdp() {
   digitalWrite(ETHERNET_CS, LOW);
-  int packetSize = Udp.parsePacket();
+  int packetSize = wifi_udp.parsePacket();
   if (packetSize) {
     Serial.print("Received packet of size ");
     Serial.println(packetSize);
     Serial.print("From ");
-    IPAddress remote = Udp.remoteIP();
+    IPAddress remote = wifi_udp.remoteIP();
     ipPrinter(&remote);
     Serial.print(", port ");
-    Serial.println(Udp.remotePort());
+    Serial.println(wifi_udp.remotePort());
 
     // read the packet into packetBuffer
-    Udp.read(packetBuffer, MAX_UDP_PACKET_SIZE);
-    Serial.println("Contents:");
+    wifi_udp.read(packetBuffer, MAX_UDP_PACKET_SIZE);
+    Serial.print("Contents:");
     Serial.println(packetBuffer);
+
     // send a reply to the IP address and port that sent us the packet we received
-    Udp.beginPacket(Udp.remoteIP(), Udp.remotePort());
-    Udp.write(ReplyBuffer);
-    Udp.write(":");
-    Udp.write(packetBuffer);
-    Udp.endPacket();
-    memset(packetBuffer, '\0', sizeof(packetBuffer));
+    if (String(packetBuffer) == "wakey") {
+      memset(packetBuffer, '\0', sizeof(packetBuffer));
+      Serial.println("Wakeup Call Received");
+      printMagicPacket(magicPacket, sizeof(magicPacket));
+      Udp.beginPacket(gateway, echoUDPPort);
+      Udp.write((const char *)magicPacket);
+      Udp.endPacket();
+
+      Udp.beginPacket(broadcast, 9);
+      Udp.write((const char *)magicPacket);
+      Udp.endPacket();
+    } else if (String(packetBuffer) != "pong") {
+      Serial.print("non wakeup reply");
+      wifi_udp.beginPacket(udp_server_addr, udp_server_port);
+      String fw_msg = String("forwading: ") + packetBuffer;
+      wifi_udp.printf(fw_msg.c_str());
+      wifi_udp.endPacket();
+
+      Udp.beginPacket(broadcast, echoUDPPort);
+      Udp.write(packetBuffer);
+      Udp.endPacket();
+
+      Udp.beginPacket(gateway, echoUDPPort);
+      Udp.write(packetBuffer);
+      Udp.endPacket();
+      memset(packetBuffer, '\0', sizeof(packetBuffer));
+    } 
   }
 
   digitalWrite(ETHERNET_CS, HIGH);
@@ -367,40 +420,33 @@ void readSerial() {
 
         lastMessageReceivedAt = millis();
       }
-      // else {
-      //   Serial.print("decoding : ");
-      //   Serial.println(bufferPrint.c_str());
-
-      //   Serial.print("Key : ");
-      //   Serial.println((char *)aes_key);
-      //   Serial.print("IV : ");
-      //   Serial.println((char *)aes_iv);
-
-      //   Serial.print("decrypt result : ");
-      //   char msgCopy[bufferPrint.length()];
-      //   strcpy(msgCopy, bufferPrint.c_str());
-      //   String result = decrypt_impl(msgCopy, aes_iv);
-      //   Serial.println(result);
-
-      //   Serial.print("encrypt result : ");
-      //   String enc_result = encrypt_impl(msgCopy, aes_iv);
-      //   Serial.println(enc_result);
-      // }
-
       reading = false;
     }
   }
+}
+
+void pingServer() {
+  float deltaTime = millis() - lastPingAt;
+
+  if (deltaTime <= 10000 || WiFi.status() != WL_CONNECTED) return;
+
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("wifi not connected");
+    return;
+  }
+
+  lastPingAt = millis();
+  String pingMsg = (String("ping_") + String(lastPingAt));  //encryptToBase64((String("ping_") + String(lastPingAt)));
+
+  wifi_udp.beginPacket(udp_server_addr, udp_server_port);
+  wifi_udp.printf(pingMsg.c_str());
+  wifi_udp.endPacket();
 }
 
 void loop() {
   captureDHT();
   readSerial();
   readUdp();
-
-  float deltaTime = millis() - lastRenderAt;
-
-  if (deltaTime > 1000) {
-    drawStatsText(&stats, &tempStats);
-    lastRenderAt = millis();
-  }
+  drawStatsText();
+  pingServer();
 }

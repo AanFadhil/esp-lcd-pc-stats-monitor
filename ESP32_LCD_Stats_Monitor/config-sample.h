@@ -1,0 +1,16 @@
+#define ETHERNET_MAC { 0xDE, 0xC6, 0xCF, 0xD9, 0xFC, 76 }
+#define PC_MAC_ADDRESS "XX:XX:XX:XX:XX:XX"
+#define ETHERNET_IP 192, 168, 99, 99
+#define ETHERNET_GATEWAY_IP 192, 168, 99, 1
+#define ETHERNET_BC 192, 168, 99, 255
+#define ECHO_UDP_PORT 8888
+#define WIFI_LOCAL_UDP_PORT 5555
+#define WIFI_SSID "xxxxxxx"
+#define WIFI_PASSWORD "xxxxxxx"
+#define WIFI_LOCAL_UDP_PORT 8888
+#define UDP_SERVER_ADDR "example.com"
+#define UDP_SERVER_PORT 5001
+
+
+
+
