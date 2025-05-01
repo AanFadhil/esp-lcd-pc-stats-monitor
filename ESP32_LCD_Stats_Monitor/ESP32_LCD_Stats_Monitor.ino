@@ -86,9 +86,10 @@ DHT dht(DHT_PIN, DHTTYPE);
 TFT_eSPI tft = TFT_eSPI();
 
 EthernetClient client;
-IPAddress ip(ETHERNET_IP);
-IPAddress gateway(ETHERNET_GATEWAY_IP);
-IPAddress broadcast(ETHERNET_BC);
+const IPAddress ip(ETHERNET_IP);
+const IPAddress gateway(ETHERNET_GATEWAY_IP);
+const IPAddress broadcast(ETHERNET_BC);
+const IPAddress subnetmask(ETHERNET_SUBNET_MASK);
 
 EthernetUDP Udp;
 WiFiUDP wifi_udp;
@@ -140,6 +141,7 @@ void setup() {
 
   Ethernet.begin(ethernet_mac);
   Ethernet.setLocalIP(ip);
+  Ethernet.setSubnetMask(subnetmask);
 
   if (Ethernet.hardwareStatus() == EthernetNoHardware) {
     Serial.println("Ethernet shield was not found.  Sorry, can't run without hardware. :(");
